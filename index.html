@@ -169,6 +169,7 @@ html.dark .nav{background:rgba(15,23,42,.92)}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes scanmove{0%,100%{top:0}50%{top:calc(100% - 2px)}}
 .fade-up{animation:fadeUp .3s ease}
 .blink{animation:blink 1s ease-in-out infinite}
 /* ── Misc ────────────────────────────────────────────────── */
@@ -276,10 +277,27 @@ html.dark .nav{background:rgba(15,23,42,.92)}
       </div>
     </div>
 
-    <!-- Shutter button -->
+    <!-- Barcode targeting overlay -->
+    <div id="barcodeOverlay" style="display:none;position:absolute;inset:0;z-index:21;pointer-events:none">
+      <div style="position:absolute;top:38%;left:12%;right:12%;height:24%;
+        border:2px solid #34d399;border-radius:12px;box-shadow:0 0 0 9999px rgba(0,0,0,.4)">
+        <div style="position:absolute;left:0;right:0;top:0;height:2px;background:#34d399;
+          box-shadow:0 0 8px #34d399;animation:scanmove 1.6s ease-in-out infinite"></div>
+        <span style="position:absolute;bottom:-26px;left:50%;transform:translateX(-50%);
+          font-family:'SF Mono','Courier New',monospace;font-size:10px;color:#34d399;
+          background:rgba(0,0,0,.8);padding:3px 10px;border-radius:6px;white-space:nowrap">
+          🔖 Align barcode in the box</span>
+      </div>
+    </div>
+
+    <!-- Shutter button + barcode toggle -->
     <div style="position:absolute;bottom:0;left:0;right:0;padding:14px;z-index:20;
-      display:flex;justify-content:center;
+      display:flex;justify-content:space-between;align-items:center;
       background:linear-gradient(to top,rgba(0,0,0,.6),transparent)">
+      <button id="barcodeBtn" onclick="toggleBarcode()" title="Scan barcode"
+        style="width:54px;height:54px;border-radius:16px;background:rgba(0,0,0,.45);
+          border:1px solid rgba(255,255,255,.25);color:#fff;font-size:24px;cursor:pointer;
+          display:flex;align-items:center;justify-content:center;transition:background .2s">🔖</button>
       <button onclick="triggerShutter()"
         style="width:62px;height:62px;border-radius:50%;background:rgba(255,255,255,.2);
           border:4px solid rgba(255,255,255,.85);display:flex;align-items:center;
@@ -287,6 +305,7 @@ html.dark .nav{background:rgba(15,23,42,.92)}
         onmousedown="this.style.transform='scale(.88)'" onmouseup="this.style.transform=''">
         <div style="width:46px;height:46px;border-radius:50%;background:rgba(255,255,255,.92)"></div>
       </button>
+      <div style="width:54px"></div><!-- spacer keeps shutter centered -->
     </div>
     <!-- Shutter flash -->
     <div id="sFlash" style="position:absolute;inset:0;background:#fff;
@@ -305,7 +324,14 @@ html.dark .nav{background:rgba(15,23,42,.92)}
     <!-- Manual add form (hidden) -->
     <div id="ingForm" style="display:none;background:var(--surface2);border-radius:14px;
       padding:14px;border:1.5px dashed var(--bd2);margin-bottom:14px">
-      <div class="clabel">Add food manually</div>
+      <div class="clabel">Scan or enter a barcode</div>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input class="inp" type="text" id="ingBarcode" inputmode="numeric"
+          placeholder="Barcode no. (e.g. 3017620422003)" style="flex:1">
+        <button class="btn btn-secondary" onclick="lookupBarcodeManual()"
+          style="white-space:nowrap">🔖 Look up</button>
+      </div>
+      <div style="text-align:center;font-size:10px;color:var(--t3);margin:2px 0 12px">— or add food manually —</div>
       <input class="inp" type="text" id="ingName" list="foodHints"
         placeholder="Food name (e.g. Brown Rice)" style="margin-bottom:8px">
       <datalist id="foodHints">
@@ -882,6 +908,7 @@ async function toggleCam() {
 }
 
 function stopCam() {
+  stopBarcode();
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   const v = document.getElementById('camVideo');
   v.srcObject = null;
@@ -1017,6 +1044,160 @@ function applyAI(foods, preview) {
   showCard(lastFood, preview, false);
   persist();
   renderSliders();
+}
+
+// ═══════════════════════════════════════════════════════════
+// BARCODE SCANNER  (native BarcodeDetector → ZXing fallback)
+// Looks products up in the free OpenFoodFacts database.
+// ═══════════════════════════════════════════════════════════
+let barcodeScanning = false;
+let barcodeRAF      = null;
+let zxingReader     = null;
+
+function loadZXing() {
+  if (window.ZXing) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+
+function setBarcodeUI(on) {
+  document.getElementById('barcodeOverlay').style.display = on ? 'block' : 'none';
+  const b = document.getElementById('barcodeBtn');
+  if (b) b.style.background = on ? 'rgba(52,211,153,.9)' : 'rgba(0,0,0,.45)';
+}
+
+async function toggleBarcode() {
+  if (barcodeScanning) { stopBarcode(); return; }
+  if (!camStream) {
+    // Barcode scanning needs the live camera — guide the user, or let them type it.
+    const block = diagnoseCam();
+    showCamHelp(block || {
+      reason: '📷 Turn the camera on first to scan a barcode.',
+      steps: [
+        { icon:'📷', text:'Tap <strong>Enable Camera</strong> at the top, then tap 🔖 again.' },
+        { icon:'⌨️', text:'No camera? Tap <strong>＋ Add food</strong> and type the barcode number instead.' }
+      ]
+    });
+    return;
+  }
+  barcodeScanning = true;
+  setBarcodeUI(true);
+  toast('🔖 Point the camera at a barcode', 'ok');
+  const v = document.getElementById('camVideo');
+  const c = document.getElementById('camCanvas');
+
+  if ('BarcodeDetector' in window) {
+    // Fast native path (Android Chrome, desktop Chrome/Edge)
+    let det;
+    try { det = new window.BarcodeDetector({ formats:['ean_13','ean_8','upc_a','upc_e','code_128','code_39'] }); }
+    catch(e) { det = new window.BarcodeDetector(); }
+    const loop = async () => {
+      if (!barcodeScanning) return;
+      try {
+        const codes = await det.detect(v);
+        if (codes && codes.length) { onBarcode(codes[0].rawValue); return; }
+      } catch(e) {}
+      barcodeRAF = requestAnimationFrame(loop);
+    };
+    loop();
+  } else {
+    // Fallback path for iPhone Safari (no BarcodeDetector) via ZXing
+    try {
+      await loadZXing();
+      zxingReader = new window.ZXing.BrowserMultiFormatReader();
+      zxingReader.decodeFromVideoElement(v, (result) => {
+        if (result && barcodeScanning) onBarcode(result.getText());
+      });
+    } catch(e) {
+      stopBarcode();
+      toast('Scanner failed to load — type the barcode in ＋ Add food', 'err');
+    }
+  }
+}
+
+function stopBarcode() {
+  barcodeScanning = false;
+  setBarcodeUI(false);
+  if (barcodeRAF) { cancelAnimationFrame(barcodeRAF); barcodeRAF = null; }
+  if (zxingReader) { try { zxingReader.reset(); } catch(e) {} zxingReader = null; }
+}
+
+function onBarcode(code) {
+  if (!barcodeScanning) return;
+  stopBarcode();
+  if (navigator.vibrate) navigator.vibrate(120);
+  const flash = document.getElementById('sFlash');
+  flash.style.opacity = '1';
+  setTimeout(() => { flash.style.opacity = '0'; }, 130);
+  lookupBarcode(code);
+}
+
+function lookupBarcodeManual() {
+  const code = (document.getElementById('ingBarcode').value || '').trim();
+  if (!code) { ring('ingBarcode'); return; }
+  lookupBarcode(code);
+}
+
+async function lookupBarcode(code) {
+  code = String(code).replace(/\D/g, '');
+  if (code.length < 6) { toast('Enter a valid barcode number', 'warn'); return; }
+  toast('🔖 Looking up ' + code + '…', 'ok');
+  try {
+    const r = await fetch('https://world.openfoodfacts.org/api/v2/product/' + code +
+      '.json?fields=product_name,brands,nutriments,serving_quantity');
+    const d = await r.json();
+    if (d.status !== 1 || !d.product) {
+      toast('Not found in food database — try manual entry', 'warn');
+      return;
+    }
+    const p   = d.product;
+    const n   = p.nutriments || {};
+    const num = k => parseFloat(n[k]) || 0;                 // per-100g value
+    const kJ100 = n['energy-kj_100g'] != null ? num('energy-kj_100g') : num('energy-kcal_100g') * 4.184;
+    let na100 = num('sodium_100g') * 1000;                  // g → mg
+    if (!na100 && n['salt_100g'] != null) na100 = num('salt_100g') * 1000 / 2.5;
+    const serving = parseFloat(p.serving_quantity) || 100;
+
+    const item = {
+      id:    'bc_' + code + '_' + Date.now(),
+      name:  (function () {
+               const nm = (p.product_name || ('Item ' + code)).trim();
+               const br = p.brands ? p.brands.split(',')[0].trim() : '';
+               // Only append the brand if it isn't already part of the product name
+               return (br && !nm.toLowerCase().includes(br.toLowerCase())) ? nm + ' (' + br + ')' : nm;
+             })(),
+      icon:  '🔖',
+      value: Math.round(serving),
+      min:   0,
+      max:   Math.max(300, Math.round(serving * 3)),
+      step:  5,
+      unit:  'g',
+      kJ:    kJ100 / 100,                       // per-gram values
+      ca:    num('calcium_100g')   * 1000 / 100,
+      pr:    num('proteins_100g')         / 100,
+      fe:    num('iron_100g')      * 1000 / 100,
+      vc:    num('vitamin-c_100g') * 1000 / 100,
+      fi:    num('fiber_100g')            / 100,
+      na:    na100 / 100
+    };
+
+    portions.push(item);
+    calcNut();
+    lastFood = { name: item.name, emoji:'🔖', conf:100,
+                 nut: { ...nut, cal: Math.round(nut.kJ / 4.184) } };
+    document.getElementById('demoBanner').style.display = 'none';
+    showCard(lastFood, null, false);
+    persist();
+    renderSliders();
+    const bi = document.getElementById('ingBarcode'); if (bi) bi.value = '';
+    toast('✓ Added: ' + item.name, 'ok');
+  } catch(e) {
+    toast('Lookup failed — check your connection', 'err');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
