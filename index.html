@@ -1203,6 +1203,20 @@ function lookupBarcodeManual() {
   lookupBarcode(code);
 }
 
+// When a barcode isn't in the database (very common for Japanese products),
+// open the manual-entry form so the user can type the values from the label.
+function barcodeManualFallback(code, presetName) {
+  const form = document.getElementById('ingForm');
+  if (form && form.style.display === 'none') toggleIngForm();
+  const bi = document.getElementById('ingBarcode'); if (bi) bi.value = code || '';
+  const nm = document.getElementById('ingName');
+  if (nm && presetName) nm.value = presetName;
+  setTimeout(() => {
+    if (form) form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (nm) nm.focus();
+  }, 120);
+}
+
 async function lookupBarcode(code) {
   code = String(code).replace(/\D/g, '');
   if (code.length < 6) { toast('Enter a valid barcode number', 'warn'); return; }
@@ -1212,7 +1226,8 @@ async function lookupBarcode(code) {
       '.json?fields=product_name,brands,nutriments,serving_quantity');
     const d = await r.json();
     if (d.status !== 1 || !d.product) {
-      toast('Not found in food database — try manual entry', 'warn');
+      toast('Not in database (common for Japanese items) — add it from the label below', 'warn');
+      barcodeManualFallback(code, '');
       return;
     }
     const p   = d.product;
@@ -1230,7 +1245,8 @@ async function lookupBarcode(code) {
 
     // Bail out if the product has no usable nutrition data at all
     if (!kJ100 && !num('proteins_100g') && !num('carbohydrates_100g') && !num('fat_100g')) {
-      toast('Found it, but no nutrition data on file — add manually', 'warn');
+      toast('Found it, but no nutrition data — enter it from the label below', 'warn');
+      barcodeManualFallback(code, (p.product_name || '').trim());
       return;
     }
 
