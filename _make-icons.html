@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NutriTime — Icon Generator</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#0f172a;color:#f1f5f9;
+    display:flex;flex-direction:column;align-items:center;gap:20px;padding:40px 20px;line-height:1.6}
+  h1{font-size:20px}
+  p{color:#94a3b8;max-width:440px;text-align:center;font-size:14px}
+  .row{display:flex;gap:24px;flex-wrap:wrap;justify-content:center}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:20px;text-align:center}
+  canvas{border-radius:18px;background:#fff}
+  button{margin-top:14px;background:#4f46e5;color:#fff;border:none;border-radius:10px;
+    padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer}
+  button:hover{background:#6366f1}
+  .ok{color:#34d399;font-weight:700}
+</style>
+</head>
+<body>
+  <h1>🎨 NutriTime Icon Generator</h1>
+  <p>This page turns <b>icon.svg</b> into the PNG files your app needs.
+     Click each <b>Download</b> button, then <b>save both files into the same nutritime folder</b>
+     (keep the exact names: <code>icon-192.png</code> and <code>icon-512.png</code>).</p>
+  <div class="row">
+    <div class="card">
+      <canvas id="c192" width="192" height="192"></canvas>
+      <div>192 × 192</div>
+      <button onclick="dl(192)">⬇ Download icon-192.png</button>
+    </div>
+    <div class="card">
+      <canvas id="c512" width="512" height="512"></canvas>
+      <div>512 × 512</div>
+      <button onclick="dl(512)">⬇ Download icon-512.png</button>
+    </div>
+  </div>
+  <p id="status"></p>
+
+<script>
+const sizes = [192, 512];
+const img = new Image();
+img.onload = () => {
+  sizes.forEach(s => {
+    const cv = document.getElementById('c' + s);
+    cv.getContext('2d').drawImage(img, 0, 0, s, s);
+  });
+  document.getElementById('status').innerHTML =
+    '<span class="ok">✓ Ready.</span> Click both download buttons above.';
+};
+img.onerror = () => {
+  document.getElementById('status').innerHTML =
+    '⚠️ Could not load icon.svg — make sure this page is in the same folder as icon.svg, ' +
+    'and open it through a local server (not file://) if your browser blocks it.';
+};
+img.src = 'icon.svg';
+
+function dl(size) {
+  const cv = document.getElementById('c' + size);
+  const a = document.createElement('a');
+  a.download = 'icon-' + size + '.png';
+  a.href = cv.toDataURL('image/png');
+  a.click();
+}
+</script>
+</body>
+</html>

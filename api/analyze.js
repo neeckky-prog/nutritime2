@@ -1,0 +1,106 @@
+// NutriTime — Vercel Serverless Function
+// File location must be: api/analyze.js  (inside the api/ folder)
+
+const handler = async (req, res) => {
+  // Basic abuse protection: if ALLOWED_ORIGIN is set (e.g. https://nutritime.vercel.app),
+  // only allow browser requests coming from your own deployed site. This stops other
+  // websites from calling your endpoint and spending your Gemini quota. Same-origin
+  // requests from your PWA don't send an Origin header, so they always pass.
+  const allowed = process.env.ALLOWED_ORIGIN;
+  const origin  = req.headers.origin || '';
+  res.setHeader('Access-Control-Allow-Origin',  allowed || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST')   return res.status(405).json({ error: 'POST only' });
+
+  if (allowed && origin && origin !== allowed) {
+    return res.status(403).json({ error: 'Forbidden origin' });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({
+      error: 'GEMINI_API_KEY not set — Vercel dashboard → Settings → Environment Variables'
+    });
+  }
+
+  const { base64 } = req.body || {};
+  if (!base64) return res.status(400).json({ error: 'No image received' });
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
+
+    const geminiRes = await fetch(url, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: 'image/jpeg', data: base64 } },
+            {
+              text: `You are a clinical nutrition AI. Identify every distinct food item visible in this photo.
+
+Return ONLY a valid JSON array — no markdown, no code fences, no explanation, nothing outside the array:
+[
+  {
+    "name": "Food Name",
+    "portionG": 150,
+    "calories": 280,
+    "energyKJ": 1172,
+    "proteinG": 12,
+    "carbsG": 35,
+    "fatG": 8,
+    "calciumMg": 120,
+    "ironMg": 2,
+    "vitaminCMg": 5,
+    "sodiumMg": 320,
+    "fiberG": 3
+  }
+]
+
+Rules:
+- One object per distinct food item
+- Identify the food and estimate the portion size in grams. If the image is ambiguous, provide a range (e.g., 100-150g) and default to the most likely realistic portion for a standard serving.
+- energyKJ must equal calories multiplied by 4.184
+- Start your response with [ and end with ]
+- Return nothing outside the JSON array`
+            }
+          ]
+        }],
+        generationConfig: {
+          temperature:      0.1,
+          maxOutputTokens:  1024,
+          responseMimeType: 'application/json'
+        }
+      })
+    });
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      return res.status(geminiRes.status).json({ error: 'Gemini error: ' + errText });
+    }
+
+    const data    = await geminiRes.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+
+    // Strip any markdown fences Gemini might add despite responseMimeType
+    const cleaned = rawText
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i,     '')
+      .replace(/\s*```$/i,     '')
+      .trim();
+
+    const foods = JSON.parse(cleaned);
+    return res.json(Array.isArray(foods) ? foods : [foods]);
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// Note: scanned images are resized to ~800px (~150 KB) in the app before upload,
+// so Vercel's default body limit is plenty. The old Next.js-style bodyParser
+// config did nothing on a plain Vercel function, so it was removed.
+module.exports = handler;
